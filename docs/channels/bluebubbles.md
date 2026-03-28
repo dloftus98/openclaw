@@ -20,7 +20,7 @@ Status: bundled plugin that talks to the BlueBubbles macOS server over HTTP. **R
 - Attachments and stickers are ingested as inbound media (and surfaced to the agent when possible).
 - Pairing/allowlist works the same way as other channels (`/channels/pairing` etc) with `channels.bluebubbles.allowFrom` + pairing codes.
 - Reactions are surfaced as system events just like Slack/Telegram so agents can "mention" them before replying.
-- Advanced features: edit, unsend, reply threading, message effects, group management.
+- Advanced features: channel discovery, targeted history reads, edit, unsend, reply threading, message effects, group management.
 
 ## Quick start
 
@@ -232,11 +232,18 @@ Per-group configuration:
 
 BlueBubbles supports advanced message actions when enabled in config:
 
+- `channel-list`: list recent/known BlueBubbles chats and return reusable chat targets.
+- `read`: read recent history for one specific BlueBubbles chat target. This is target-scoped; use `channel-list` first when you do not already know the chat target.
+- `search` is not currently available through the BlueBubbles message action surface.
+- `read` currently supports `target` + `limit` only. `before`, `after`, and `around` are not supported yet.
+
 ```json5
 {
   channels: {
     bluebubbles: {
       actions: {
+        channelList: true, // allow message action="channel-list"
+        read: true, // allow message action="read" for a specific chat target
         reactions: true, // tapbacks (default: true)
         edit: true, // edit sent messages (macOS 13+, broken on macOS 26 Tahoe)
         unsend: true, // unsend messages (macOS 13+)
@@ -256,6 +263,8 @@ BlueBubbles supports advanced message actions when enabled in config:
 
 Available actions:
 
+- **channel-list**: List recent chats and reusable targets (`limit`)
+- **read**: Read recent history from one chat (`target`, `limit`)
 - **react**: Add/remove tapback reactions (`messageId`, `emoji`, `remove`)
 - **edit**: Edit a sent message (`messageId`, `text`)
 - **unsend**: Unsend a message (`messageId`)
@@ -347,6 +356,7 @@ Prefer `chat_guid` for stable routing:
 - `chat_identifier:...`
 - Direct handles: `+15555550123`, `user@example.com`
   - If a direct handle does not have an existing DM chat, OpenClaw will create one via `POST /api/v1/chat/new`. This requires the BlueBubbles Private API to be enabled.
+- `message action="channel-list" channel="bluebubbles"` returns these targets so you can feed them back into `message action="read"` or follow-up send/reply actions.
 
 ## Security
 

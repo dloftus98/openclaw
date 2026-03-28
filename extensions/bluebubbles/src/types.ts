@@ -68,12 +68,15 @@ export type BlueBubblesAccountConfig = {
 };
 
 export type BlueBubblesActionConfig = {
+  channelList?: boolean;
+  read?: boolean;
   reactions?: boolean;
   edit?: boolean;
   unsend?: boolean;
   reply?: boolean;
   sendWithEffect?: boolean;
   renameGroup?: boolean;
+  setGroupIcon?: boolean;
   addParticipant?: boolean;
   removeParticipant?: boolean;
   leaveGroup?: boolean;

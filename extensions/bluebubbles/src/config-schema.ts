@@ -13,6 +13,8 @@ import { buildSecretInputSchema, hasConfiguredSecretInput } from "./secret-input
 
 const bluebubblesActionSchema = z
   .object({
+    channelList: z.boolean().default(true),
+    read: z.boolean().default(true),
     reactions: z.boolean().default(true),
     edit: z.boolean().default(true),
     unsend: z.boolean().default(true),

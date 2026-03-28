@@ -125,7 +125,62 @@ async function parseBlueBubblesMessageResponse(res: Response): Promise<BlueBubbl
   }
 }
 
-type BlueBubblesChatRecord = Record<string, unknown>;
+export type BlueBubblesChatRecord = Record<string, unknown>;
+
+export type BlueBubblesListedChat = {
+  id: string;
+  target: string;
+  kind: "direct" | "group";
+  name?: string;
+  chatGuid?: string;
+  chatIdentifier?: string;
+  chatId?: number;
+  lastActivityAt?: string;
+  lastActivityMs?: number;
+  participants?: string[];
+};
+
+const DEFAULT_CHAT_LIST_LIMIT = 20;
+const MAX_CHAT_LIST_LIMIT = 100;
+
+function clampChatListLimit(limit: number | undefined): number {
+  if (limit === undefined) {
+    return DEFAULT_CHAT_LIST_LIMIT;
+  }
+  if (!Number.isFinite(limit)) {
+    return DEFAULT_CHAT_LIST_LIMIT;
+  }
+  const normalized = Math.floor(limit);
+  if (normalized <= 0) {
+    return 0;
+  }
+  return Math.min(normalized, MAX_CHAT_LIST_LIMIT);
+}
+
+function isBlueBubblesChatGuid(value: string): boolean {
+  const parts = value.split(";");
+  if (parts.length !== 3) {
+    return false;
+  }
+  const service = parts[0]?.trim();
+  const separator = parts[1]?.trim();
+  const identifier = parts[2]?.trim();
+  return Boolean(service && identifier && (separator === "+" || separator === "-"));
+}
+
+function extractRawChatGuid(chat: BlueBubblesChatRecord): string | null {
+  const candidates = [chat.chatGuid, chat.guid, chat.chat_guid];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") {
+      continue;
+    }
+    const trimmed = candidate.trim();
+    if (trimmed && isBlueBubblesChatGuid(trimmed)) {
+      return trimmed;
+    }
+  }
+  return null;
+}
 
 function extractChatGuid(chat: BlueBubblesChatRecord): string | null {
   const candidates = [
@@ -192,6 +247,156 @@ function extractParticipantAddresses(chat: BlueBubblesChatRecord): string[] {
   return out;
 }
 
+function extractParticipantLabels(chat: BlueBubblesChatRecord): string[] {
+  const raw =
+    (Array.isArray(chat.participants) ? chat.participants : null) ??
+    (Array.isArray(chat.handles) ? chat.handles : null) ??
+    (Array.isArray(chat.participantHandles) ? chat.participantHandles : null);
+  if (!raw) {
+    return [];
+  }
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string") {
+      const trimmed = entry.trim();
+      if (trimmed) {
+        out.push(trimmed);
+      }
+      continue;
+    }
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const candidate =
+      (typeof record.displayName === "string" && record.displayName.trim()) ||
+      (typeof record.display_name === "string" && record.display_name.trim()) ||
+      (typeof record.name === "string" && record.name.trim()) ||
+      (typeof record.address === "string" && record.address.trim()) ||
+      (typeof record.handle === "string" && record.handle.trim()) ||
+      (typeof record.id === "string" && record.id.trim()) ||
+      (typeof record.identifier === "string" && record.identifier.trim());
+    if (candidate) {
+      out.push(candidate);
+    }
+  }
+  return out;
+}
+
+function extractChatIdentifier(chat: BlueBubblesChatRecord): string | null {
+  const direct =
+    (typeof chat.identifier === "string" && chat.identifier.trim()) ||
+    (typeof chat.chatIdentifier === "string" && chat.chatIdentifier.trim()) ||
+    (typeof chat.chat_identifier === "string" && chat.chat_identifier.trim()) ||
+    null;
+  if (direct) {
+    return direct;
+  }
+  const guid = extractRawChatGuid(chat);
+  return guid ? extractChatIdentifierFromChatGuid(guid) : null;
+}
+
+function normalizeChatTimestampMs(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return raw < 1_000_000_000_000 ? Math.round(raw * 1000) : Math.round(raw);
+  }
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+    return parsed < 1_000_000_000_000 ? Math.round(parsed * 1000) : Math.round(parsed);
+  }
+  const parsed = Date.parse(trimmed);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function extractChatLastActivityMs(chat: BlueBubblesChatRecord): number | null {
+  const lastMessage =
+    (chat.lastMessage && typeof chat.lastMessage === "object"
+      ? (chat.lastMessage as Record<string, unknown>)
+      : null) ??
+    (chat.latestMessage && typeof chat.latestMessage === "object"
+      ? (chat.latestMessage as Record<string, unknown>)
+      : null) ??
+    (chat.last_message && typeof chat.last_message === "object"
+      ? (chat.last_message as Record<string, unknown>)
+      : null) ??
+    (chat.latest_message && typeof chat.latest_message === "object"
+      ? (chat.latest_message as Record<string, unknown>)
+      : null);
+
+  const candidates: unknown[] = [
+    chat.lastActivityAt,
+    chat.lastActivity,
+    chat.lastMessageAt,
+    chat.lastMessageDate,
+    chat.dateCreated,
+    chat.date_created,
+    chat.date,
+    chat.timestamp,
+    chat.time,
+    lastMessage?.dateCreated,
+    lastMessage?.date_created,
+    lastMessage?.date,
+    lastMessage?.timestamp,
+    lastMessage?.dateDelivered,
+    lastMessage?.date_delivered,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeChatTimestampMs(candidate);
+    if (normalized != null) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+function extractChatName(chat: BlueBubblesChatRecord): string | null {
+  const direct =
+    (typeof chat.displayName === "string" && chat.displayName.trim()) ||
+    (typeof chat.display_name === "string" && chat.display_name.trim()) ||
+    (typeof chat.name === "string" && chat.name.trim()) ||
+    (typeof chat.title === "string" && chat.title.trim()) ||
+    null;
+  if (direct) {
+    return direct;
+  }
+  const labels = extractParticipantLabels(chat);
+  if (labels.length > 0) {
+    return labels.join(", ");
+  }
+  const guid = extractRawChatGuid(chat);
+  if (guid) {
+    const handle = extractHandleFromChatGuid(guid);
+    if (handle) {
+      return handle;
+    }
+  }
+  return null;
+}
+
+function extractChatKind(chat: BlueBubblesChatRecord): "direct" | "group" {
+  const guid = extractRawChatGuid(chat);
+  if (guid?.includes(";+;")) {
+    return "group";
+  }
+  if (guid?.includes(";-;")) {
+    return "direct";
+  }
+  if (chat.isGroup === true || chat.is_group === true || chat.group === true) {
+    return "group";
+  }
+  return extractParticipantAddresses(chat).length > 1 ? "group" : "direct";
+}
+
 async function queryChats(params: {
   baseUrl: string;
   password: string;
@@ -199,6 +404,8 @@ async function queryChats(params: {
   offset: number;
   limit: number;
   allowPrivateNetwork?: boolean;
+  throwOnHttpError?: boolean;
+  errorContext?: string;
 }): Promise<BlueBubblesChatRecord[]> {
   const url = buildBlueBubblesApiUrl({
     baseUrl: params.baseUrl,
@@ -220,11 +427,112 @@ async function queryChats(params: {
     blueBubblesPolicy(params.allowPrivateNetwork),
   );
   if (!res.ok) {
+    if (params.throwOnHttpError) {
+      const errorText = await res.text().catch(() => "");
+      throw new Error(
+        `BlueBubbles ${params.errorContext ?? "chat query"} failed (${res.status}): ${errorText || "unknown"}`,
+      );
+    }
     return [];
   }
   const payload = (await res.json().catch(() => null)) as Record<string, unknown> | null;
   const data = payload && typeof payload.data !== "undefined" ? (payload.data as unknown) : null;
-  return Array.isArray(data) ? (data as BlueBubblesChatRecord[]) : [];
+  if (Array.isArray(data)) {
+    return data as BlueBubblesChatRecord[];
+  }
+  if (params.throwOnHttpError) {
+    throw new Error("BlueBubbles chat query returned an unexpected response.");
+  }
+  return [];
+}
+
+function toBlueBubblesChatListing(chat: BlueBubblesChatRecord): BlueBubblesListedChat | null {
+  const chatGuid = extractRawChatGuid(chat) ?? undefined;
+  const chatIdentifier = extractChatIdentifier(chat) ?? undefined;
+  const chatId = extractChatId(chat) ?? undefined;
+  const kind = extractChatKind(chat);
+  const target = chatGuid
+    ? `chat_guid:${chatGuid}`
+    : chatIdentifier
+      ? `chat_identifier:${chatIdentifier}`
+      : typeof chatId === "number"
+        ? `chat_id:${chatId}`
+        : null;
+  if (!target) {
+    return null;
+  }
+  const lastActivityMs = extractChatLastActivityMs(chat) ?? undefined;
+  return {
+    id: target,
+    target,
+    kind,
+    name: extractChatName(chat) ?? undefined,
+    chatGuid,
+    chatIdentifier,
+    chatId,
+    lastActivityAt:
+      typeof lastActivityMs === "number" ? new Date(lastActivityMs).toISOString() : undefined,
+    lastActivityMs,
+    participants: extractParticipantLabels(chat),
+  };
+}
+
+export async function listBlueBubblesChats(params: {
+  baseUrl: string;
+  password: string;
+  timeoutMs?: number;
+  limit?: number;
+  allowPrivateNetwork?: boolean;
+}): Promise<BlueBubblesListedChat[]> {
+  const effectiveLimit = clampChatListLimit(params.limit);
+  if (effectiveLimit <= 0) {
+    return [];
+  }
+
+  const pageSize = Math.min(Math.max(effectiveLimit, 50), 200);
+  const seen = new Map<string, { chat: BlueBubblesListedChat; index: number }>();
+  let index = 0;
+  for (let offset = 0; offset < 5000 && seen.size < effectiveLimit; offset += pageSize) {
+    const chats = await queryChats({
+      baseUrl: params.baseUrl,
+      password: params.password,
+      timeoutMs: params.timeoutMs,
+      offset,
+      limit: pageSize,
+      allowPrivateNetwork: params.allowPrivateNetwork,
+      throwOnHttpError: true,
+      errorContext: "channel-list",
+    });
+    if (chats.length === 0) {
+      break;
+    }
+    for (const chat of chats) {
+      const listing = toBlueBubblesChatListing(chat);
+      if (!listing || seen.has(listing.id)) {
+        continue;
+      }
+      seen.set(listing.id, { chat: listing, index });
+      index += 1;
+      if (seen.size >= effectiveLimit) {
+        break;
+      }
+    }
+    if (chats.length < pageSize) {
+      break;
+    }
+  }
+
+  return [...seen.values()]
+    .sort((a, b) => {
+      const aTime = a.chat.lastActivityMs ?? -1;
+      const bTime = b.chat.lastActivityMs ?? -1;
+      if (aTime !== bTime) {
+        return bTime - aTime;
+      }
+      return a.index - b.index;
+    })
+    .slice(0, effectiveLimit)
+    .map(({ chat }) => chat);
 }
 
 export async function resolveChatGuidForTarget(params: {
@@ -233,6 +541,7 @@ export async function resolveChatGuidForTarget(params: {
   timeoutMs?: number;
   target: BlueBubblesSendTarget;
   allowPrivateNetwork?: boolean;
+  throwOnQueryError?: boolean;
 }): Promise<string | null> {
   if (params.target.kind === "chat_guid") {
     return params.target.chatGuid;
@@ -254,6 +563,8 @@ export async function resolveChatGuidForTarget(params: {
       offset,
       limit,
       allowPrivateNetwork: params.allowPrivateNetwork,
+      throwOnHttpError: params.throwOnQueryError,
+      errorContext: "chat lookup",
     });
     if (chats.length === 0) {
       break;

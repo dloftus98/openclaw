@@ -138,6 +138,16 @@ describe("normalizeMessageActionInput", () => {
     },
     {
       input: {
+        action: "read",
+        args: {
+          channel: "bluebubbles",
+        },
+      },
+      expectedFields: { channel: "bluebubbles" },
+      absentFields: ["target", "to"],
+    },
+    {
+      input: {
         action: "channel-info",
         args: {
           channelId: "C123",

@@ -7,6 +7,8 @@ export type BlueBubblesActionSpec = {
 };
 
 export const BLUEBUBBLES_ACTIONS = {
+  "channel-list": { gate: "channelList" },
+  read: { gate: "read" },
   react: { gate: "reactions" },
   edit: { gate: "edit", unsupportedOnMacOS26: true },
   unsend: { gate: "unsend" },

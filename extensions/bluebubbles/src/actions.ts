@@ -1,4 +1,5 @@
 import { createLazyRuntimeNamedExport } from "openclaw/plugin-sdk/lazy-runtime";
+import { resolveBlueBubblesServerAccount } from "./account-resolve.js";
 import { resolveBlueBubblesAccount } from "./accounts.js";
 import { getCachedBlueBubblesPrivateApiStatus, isMacOS26OrHigher } from "./probe.js";
 import {
@@ -49,6 +50,50 @@ function mapTarget(raw: string): BlueBubblesSendTarget {
 
 function readMessageText(params: Record<string, unknown>): string | undefined {
   return readStringParam(params, "text") ?? readStringParam(params, "message");
+}
+
+function readBlueBubblesActionTarget(params: {
+  params: Record<string, unknown>;
+  toolContext?: { currentChannelId?: string | null };
+}): { rawTarget: string; target: BlueBubblesSendTarget } | null {
+  const chatGuid = readStringParam(params.params, "chatGuid");
+  if (chatGuid?.trim()) {
+    const trimmed = chatGuid.trim();
+    return {
+      rawTarget: `chat_guid:${trimmed}`,
+      target: { kind: "chat_guid", chatGuid: trimmed },
+    };
+  }
+
+  const chatIdentifier = readStringParam(params.params, "chatIdentifier");
+  if (chatIdentifier?.trim()) {
+    const trimmed = chatIdentifier.trim();
+    return {
+      rawTarget: `chat_identifier:${trimmed}`,
+      target: { kind: "chat_identifier", chatIdentifier: trimmed },
+    };
+  }
+
+  const chatId = readNumberParam(params.params, "chatId", { integer: true });
+  if (typeof chatId === "number") {
+    return {
+      rawTarget: `chat_id:${chatId}`,
+      target: { kind: "chat_id", chatId },
+    };
+  }
+
+  const rawTarget =
+    readStringParam(params.params, "to") ??
+    readStringParam(params.params, "target") ??
+    params.toolContext?.currentChannelId?.trim();
+  if (!rawTarget?.trim()) {
+    return null;
+  }
+
+  return {
+    rawTarget: rawTarget.trim(),
+    target: mapTarget(rawTarget),
+  };
 }
 
 /** Supported action names for BlueBubbles */
@@ -123,8 +168,22 @@ export const bluebubblesMessageActions: ChannelMessageActionAdapter = {
       cfg: cfg,
       accountId: accountId ?? undefined,
     });
-    const baseUrl = normalizeSecretInputString(account.config.serverUrl);
-    const password = normalizeSecretInputString(account.config.password);
+    const resolvedServerAccount = (() => {
+      try {
+        return resolveBlueBubblesServerAccount({
+          cfg: cfg,
+          accountId: accountId ?? undefined,
+        });
+      } catch {
+        return null;
+      }
+    })();
+    const baseUrl =
+      resolvedServerAccount?.baseUrl ?? normalizeSecretInputString(account.config.serverUrl);
+    const password =
+      resolvedServerAccount?.password ?? normalizeSecretInputString(account.config.password);
+    const allowPrivateNetwork =
+      resolvedServerAccount?.allowPrivateNetwork ?? account.config.allowPrivateNetwork === true;
     const opts = { cfg: cfg, accountId: accountId ?? undefined };
     const assertPrivateApiEnabled = () => {
       if (getCachedBlueBubblesPrivateApiStatus(account.accountId) === false) {
@@ -135,33 +194,19 @@ export const bluebubblesMessageActions: ChannelMessageActionAdapter = {
     };
 
     // Helper to resolve chatGuid from various params or session context
-    const resolveChatGuid = async (): Promise<string> => {
-      const chatGuid = readStringParam(params, "chatGuid");
-      if (chatGuid?.trim()) {
-        return chatGuid.trim();
+    const resolveChatGuid = async (options?: {
+      missingTargetMessage?: string;
+      notFoundMessage?: string;
+    }): Promise<string> => {
+      const targetSpec = readBlueBubblesActionTarget({ params, toolContext });
+      if (!targetSpec) {
+        throw new Error(
+          options?.missingTargetMessage ??
+            `BlueBubbles ${action} requires chatGuid, chatIdentifier, chatId, or to.`,
+        );
       }
-
-      const chatIdentifier = readStringParam(params, "chatIdentifier");
-      const chatId = readNumberParam(params, "chatId", { integer: true });
-      const to = readStringParam(params, "to");
-      // Fall back to session context if no explicit target provided
-      const contextTarget = toolContext?.currentChannelId?.trim();
-
-      const target = chatIdentifier?.trim()
-        ? ({
-            kind: "chat_identifier",
-            chatIdentifier: chatIdentifier.trim(),
-          } as BlueBubblesSendTarget)
-        : typeof chatId === "number"
-          ? ({ kind: "chat_id", chatId } as BlueBubblesSendTarget)
-          : to
-            ? mapTarget(to)
-            : contextTarget
-              ? mapTarget(contextTarget)
-              : null;
-
-      if (!target) {
-        throw new Error(`BlueBubbles ${action} requires chatGuid, chatIdentifier, chatId, or to.`);
+      if (targetSpec.target.kind === "chat_guid") {
+        return targetSpec.target.chatGuid;
       }
       if (!baseUrl || !password) {
         throw new Error(`BlueBubbles ${action} requires serverUrl and password.`);
@@ -170,14 +215,68 @@ export const bluebubblesMessageActions: ChannelMessageActionAdapter = {
       const resolved = await runtime.resolveChatGuidForTarget({
         baseUrl,
         password,
-        target,
-        allowPrivateNetwork: account.config.allowPrivateNetwork === true,
+        target: targetSpec.target,
+        allowPrivateNetwork,
+        throwOnQueryError: true,
       });
       if (!resolved) {
-        throw new Error(`BlueBubbles ${action} failed: chatGuid not found for target.`);
+        throw new Error(
+          options?.notFoundMessage ??
+            `BlueBubbles ${action} failed: chatGuid not found for target ${targetSpec.rawTarget}.`,
+        );
       }
       return resolved;
     };
+
+    if (action === "channel-list") {
+      if (!baseUrl || !password) {
+        throw new Error("BlueBubbles channel-list requires serverUrl and password.");
+      }
+      const limit = readNumberParam(params, "limit", { integer: true });
+      const channels = await runtime.listBlueBubblesChats({
+        baseUrl,
+        password,
+        limit: limit ?? undefined,
+        allowPrivateNetwork,
+      });
+      return jsonResult({ ok: true, channels });
+    }
+
+    if (action === "read") {
+      const unsupportedFilters = ["before", "after", "around"].filter((key) =>
+        Boolean(readStringParam(params, key)),
+      );
+      if (unsupportedFilters.length > 0) {
+        throw new Error(
+          `BlueBubbles read currently supports target + limit only; ${unsupportedFilters.join(", ")} ${unsupportedFilters.length === 1 ? "is" : "are"} not yet supported.`,
+        );
+      }
+
+      const targetSpec = readBlueBubblesActionTarget({ params, toolContext });
+      if (!targetSpec) {
+        throw new Error(
+          "BlueBubbles read is target-scoped. Provide target=<chat target> or run action=channel-list channel=bluebubbles first.",
+        );
+      }
+      if (!baseUrl || !password) {
+        throw new Error("BlueBubbles read requires serverUrl and password.");
+      }
+
+      const limit = readNumberParam(params, "limit", { integer: true });
+      const result = await runtime.fetchBlueBubblesHistoryForTarget({
+        baseUrl,
+        password,
+        target: targetSpec.target,
+        limit: limit ?? undefined,
+        allowPrivateNetwork,
+      });
+      return jsonResult({
+        ok: true,
+        chatGuid: result.chatGuid,
+        target: result.target,
+        messages: result.messages,
+      });
+    }
 
     // Handle react action
     if (action === "react") {

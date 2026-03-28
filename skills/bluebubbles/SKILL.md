@@ -8,7 +8,7 @@ metadata: { "openclaw": { "emoji": "🫧", "requires": { "config": ["channels.bl
 
 ## Overview
 
-BlueBubbles is OpenClaw’s recommended iMessage integration. Use the `message` tool with `channel: "bluebubbles"` to send messages and manage iMessage conversations: send texts and attachments, react (tapbacks), edit/unsend, reply in threads, and manage group participants/names/icons.
+BlueBubbles is OpenClaw’s recommended iMessage integration. Use the `message` tool with `channel: "bluebubbles"` to send messages and manage iMessage conversations: send texts and attachments, list chats, read targeted chat history, react (tapbacks), edit/unsend, reply in threads, and manage group participants/names/icons.
 
 ## Inputs to collect
 
@@ -18,6 +18,7 @@ BlueBubbles is OpenClaw’s recommended iMessage integration. Use the `message` 
 - Attachment `path` for local files, or `buffer` + `filename` for base64
 
 If the user is vague ("text my mom"), ask for the recipient handle or chat guid and the exact message content.
+If the user wants recent iMessages but does not know the chat target yet, use `channel-list` first and then `read` for the chosen target.
 
 ## Actions
 
@@ -41,6 +42,27 @@ If the user is vague ("text my mom"), ask for the recipient handle or chat guid 
   "target": "+15551234567",
   "messageId": "<message-guid>",
   "emoji": "❤️"
+}
+```
+
+### List chats before a targeted read
+
+```json
+{
+  "action": "channel-list",
+  "channel": "bluebubbles",
+  "limit": 10
+}
+```
+
+### Read recent history for one chat
+
+```json
+{
+  "action": "read",
+  "channel": "bluebubbles",
+  "target": "chat_guid:iMessage;-;+15551234567",
+  "limit": 20
 }
 ```
 
@@ -120,6 +142,8 @@ If the user is vague ("text my mom"), ask for the recipient handle or chat guid 
 
 - Requires gateway config `channels.bluebubbles` (serverUrl/password/webhookPath).
 - Prefer `chat_guid` targets when you have them (especially for group chats).
+- `read` is target-scoped. It does not read every iMessage chat at once.
+- `read` currently supports `target` + `limit` only. `before`, `after`, `around`, and native BlueBubbles `search` are not available yet.
 - BlueBubbles supports rich actions, but some are macOS-version dependent (for example, edit may be broken on macOS 26 Tahoe).
 - The gateway may expose both short and full message ids; full ids are more durable across restarts.
 - Developer reference for the underlying plugin lives in `extensions/bluebubbles/README.md`.

@@ -158,6 +158,59 @@ function renderMessagesFromPayload(payload: unknown, opts: FormatOpts): string[]
   return renderMessageList(messages, opts, "No messages.");
 }
 
+function renderChannelsFromPayload(payload: unknown, opts: FormatOpts): string[] | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const channels = (payload as { channels?: unknown }).channels;
+  if (!Array.isArray(channels)) {
+    return null;
+  }
+
+  const rows = channels.slice(0, 25).map((channel) => {
+    const entry = channel as Record<string, unknown>;
+    const target =
+      (typeof entry.target === "string" && entry.target) ||
+      (typeof entry.id === "string" && entry.id) ||
+      "";
+    const name =
+      (typeof entry.name === "string" && entry.name) ||
+      (typeof entry.displayName === "string" && entry.displayName) ||
+      "";
+    const kind =
+      (typeof entry.kind === "string" && entry.kind) ||
+      (typeof entry.type === "string" && entry.type) ||
+      "";
+    const activity =
+      (typeof entry.lastActivityAt === "string" && entry.lastActivityAt) ||
+      (typeof entry.timestampUtc === "string" && entry.timestampUtc) ||
+      "";
+    return {
+      Name: shortenText(name, 28),
+      Kind: shortenText(kind, 10),
+      Target: shortenText(target, 42),
+      Activity: shortenText(activity, 26),
+    };
+  });
+
+  if (rows.length === 0) {
+    return [theme.muted("No channels.")];
+  }
+
+  return [
+    renderTable({
+      width: opts.width,
+      columns: [
+        { key: "Name", header: "Name", minWidth: 14 },
+        { key: "Kind", header: "Kind", minWidth: 8 },
+        { key: "Target", header: "Target", flex: true, minWidth: 22 },
+        { key: "Activity", header: "Activity", minWidth: 20 },
+      ],
+      rows,
+    }).trimEnd(),
+  ];
+}
+
 function renderPinsFromPayload(payload: unknown, opts: FormatOpts): string[] | null {
   if (!payload || typeof payload !== "object") {
     return null;
@@ -379,6 +432,15 @@ export function formatMessageCliText(result: MessageActionRunResult): string[] {
     if (messagesTable) {
       lines.push(heading("Messages"));
       lines.push(messagesTable[0] ?? "");
+      return lines;
+    }
+  }
+
+  if (result.action === "channel-list") {
+    const channelsTable = renderChannelsFromPayload(payload, opts);
+    if (channelsTable) {
+      lines.push(heading("Channels"));
+      lines.push(channelsTable[0] ?? "");
       return lines;
     }
   }

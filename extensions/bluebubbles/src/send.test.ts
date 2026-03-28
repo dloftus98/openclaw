@@ -3,7 +3,12 @@ import "./test-mocks.js";
 import { getCachedBlueBubblesPrivateApiStatus } from "./probe.js";
 import type { PluginRuntime } from "./runtime-api.js";
 import { clearBlueBubblesRuntime, setBlueBubblesRuntime } from "./runtime.js";
-import { sendMessageBlueBubbles, resolveChatGuidForTarget, createChatForHandle } from "./send.js";
+import {
+  createChatForHandle,
+  listBlueBubblesChats,
+  resolveChatGuidForTarget,
+  sendMessageBlueBubbles,
+} from "./send.js";
 import {
   BLUE_BUBBLES_PRIVATE_API_STATUS,
   createBlueBubblesFetchGuardPassthroughInstaller,
@@ -372,6 +377,119 @@ describe("send", () => {
       });
 
       expect(result).toBe("format1-guid");
+    });
+
+    it("throws the query error when strict lookup is requested", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        text: () => Promise.resolve("Unauthorized"),
+      });
+
+      const target: BlueBubblesSendTarget = { kind: "chat_id", chatId: 123 };
+      await expect(
+        resolveChatGuidForTarget({
+          baseUrl: "http://localhost:1234",
+          password: "test",
+          target,
+          throwOnQueryError: true,
+        }),
+      ).rejects.toThrow(/chat lookup failed \(401\): Unauthorized/);
+    });
+  });
+
+  describe("listBlueBubblesChats", () => {
+    it("normalizes chat discovery results into reusable targets", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [
+              {
+                guid: "iMessage;+;group-123",
+                displayName: "Project Room",
+                id: 12,
+                dateCreated: 1_710_000_100,
+                participants: [
+                  { displayName: "Ada", address: "+15550000001" },
+                  { displayName: "Linus", address: "+15550000002" },
+                ],
+              },
+              {
+                guid: "iMessage;-;+15551234567",
+                id: 10,
+                participants: [{ displayName: "Jane Doe", address: "+15551234567" }],
+                latestMessage: { dateCreated: 1_710_000_200 },
+              },
+            ],
+          }),
+      });
+
+      const chats = await listBlueBubblesChats({
+        baseUrl: "http://localhost:1234",
+        password: "test",
+        limit: 10,
+      });
+
+      expect(chats).toEqual([
+        expect.objectContaining({
+          target: "chat_guid:iMessage;-;+15551234567",
+          kind: "direct",
+          name: "Jane Doe",
+          chatGuid: "iMessage;-;+15551234567",
+        }),
+        expect.objectContaining({
+          target: "chat_guid:iMessage;+;group-123",
+          kind: "group",
+          name: "Project Room",
+          chatId: 12,
+          participants: ["Ada", "Linus"],
+        }),
+      ]);
+    });
+
+    it("falls back to chat_identifier targets when guid is missing", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [
+              {
+                identifier: "chat660250192681427962",
+                participants: [{ address: "+15551234567" }],
+              },
+            ],
+          }),
+      });
+
+      const chats = await listBlueBubblesChats({
+        baseUrl: "http://localhost:1234",
+        password: "test",
+        limit: 5,
+      });
+
+      expect(chats).toEqual([
+        expect.objectContaining({
+          target: "chat_identifier:chat660250192681427962",
+          chatIdentifier: "chat660250192681427962",
+        }),
+      ]);
+    });
+
+    it("surfaces channel-list HTTP errors", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve("boom"),
+      });
+
+      await expect(
+        listBlueBubblesChats({
+          baseUrl: "http://localhost:1234",
+          password: "test",
+          limit: 5,
+        }),
+      ).rejects.toThrow(/channel-list failed \(500\): boom/);
     });
   });
 

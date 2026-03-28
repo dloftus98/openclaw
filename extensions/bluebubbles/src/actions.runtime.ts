@@ -8,9 +8,11 @@ import {
   setGroupIconBlueBubbles as setGroupIconBlueBubblesImpl,
   unsendBlueBubblesMessage as unsendBlueBubblesMessageImpl,
 } from "./chat.js";
+import { fetchBlueBubblesHistoryForTarget as fetchBlueBubblesHistoryForTargetImpl } from "./history.js";
 import { resolveBlueBubblesMessageId as resolveBlueBubblesMessageIdImpl } from "./monitor.js";
 import { sendBlueBubblesReaction as sendBlueBubblesReactionImpl } from "./reactions.js";
 import {
+  listBlueBubblesChats as listBlueBubblesChatsImpl,
   resolveChatGuidForTarget as resolveChatGuidForTargetImpl,
   sendMessageBlueBubbles as sendMessageBlueBubblesImpl,
 } from "./send.js";
@@ -26,6 +28,8 @@ export const blueBubblesActionsRuntime = {
   unsendBlueBubblesMessage: unsendBlueBubblesMessageImpl,
   resolveBlueBubblesMessageId: resolveBlueBubblesMessageIdImpl,
   sendBlueBubblesReaction: sendBlueBubblesReactionImpl,
+  fetchBlueBubblesHistoryForTarget: fetchBlueBubblesHistoryForTargetImpl,
+  listBlueBubblesChats: listBlueBubblesChatsImpl,
   resolveChatGuidForTarget: resolveChatGuidForTargetImpl,
   sendMessageBlueBubbles: sendMessageBlueBubblesImpl,
 };

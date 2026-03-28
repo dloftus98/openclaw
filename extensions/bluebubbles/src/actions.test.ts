@@ -1,12 +1,11 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { bluebubblesMessageActions } from "./actions.js";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { sendBlueBubblesAttachment } from "./attachments.js";
 import { editBlueBubblesMessage, setGroupIconBlueBubbles } from "./chat.js";
+import { fetchBlueBubblesHistoryForTarget } from "./history.js";
 import { resolveBlueBubblesMessageId } from "./monitor.js";
-import { getCachedBlueBubblesPrivateApiStatus } from "./probe.js";
 import { sendBlueBubblesReaction } from "./reactions.js";
 import type { OpenClawConfig } from "./runtime-api.js";
-import { resolveChatGuidForTarget, sendMessageBlueBubbles } from "./send.js";
+import { listBlueBubblesChats, resolveChatGuidForTarget, sendMessageBlueBubbles } from "./send.js";
 
 vi.mock("./accounts.js", async () => {
   const { createBlueBubblesAccountsMockModule } = await import("./test-harness.js");
@@ -18,9 +17,22 @@ vi.mock("./reactions.js", () => ({
 }));
 
 vi.mock("./send.js", () => ({
+  listBlueBubblesChats: vi.fn().mockResolvedValue([]),
   resolveChatGuidForTarget: vi.fn().mockResolvedValue("iMessage;-;+15551234567"),
   sendMessageBlueBubbles: vi.fn().mockResolvedValue({ messageId: "msg-123" }),
 }));
+
+vi.mock("./history.js", async () => {
+  const actual = await vi.importActual<typeof import("./history.js")>("./history.js");
+  return {
+    ...actual,
+    fetchBlueBubblesHistoryForTarget: vi.fn().mockResolvedValue({
+      chatGuid: "iMessage;-;+15551234567",
+      target: "chat_guid:iMessage;-;+15551234567",
+      messages: [],
+    }),
+  };
+});
 
 vi.mock("./chat.js", () => ({
   editBlueBubblesMessage: vi.fn().mockResolvedValue(undefined),
@@ -40,16 +52,29 @@ vi.mock("./monitor.js", () => ({
   resolveBlueBubblesMessageId: vi.fn((id: string) => id),
 }));
 
-vi.mock("./probe.js", () => ({
-  isMacOS26OrHigher: vi.fn().mockReturnValue(false),
-  getCachedBlueBubblesPrivateApiStatus: vi.fn().mockReturnValue(null),
-}));
-
 describe("bluebubblesMessageActions", () => {
-  const describeMessageTool = bluebubblesMessageActions.describeMessageTool!;
-  const supportsAction = bluebubblesMessageActions.supportsAction!;
-  const extractToolSend = bluebubblesMessageActions.extractToolSend!;
-  const handleAction = bluebubblesMessageActions.handleAction!;
+  let bluebubblesMessageActions: typeof import("./actions.js").bluebubblesMessageActions;
+  let probe: typeof import("./probe.js");
+
+  beforeAll(async () => {
+    probe = await import("./probe.js");
+    vi.spyOn(probe, "getCachedBlueBubblesPrivateApiStatus").mockReturnValue(null);
+    vi.spyOn(probe, "isMacOS26OrHigher").mockReturnValue(false);
+    ({ bluebubblesMessageActions } = await import("./actions.js"));
+  });
+
+  const describeMessageTool = (
+    ...args: Parameters<NonNullable<typeof bluebubblesMessageActions.describeMessageTool>>
+  ) => bluebubblesMessageActions.describeMessageTool!(...args);
+  const supportsAction = (
+    ...args: Parameters<NonNullable<typeof bluebubblesMessageActions.supportsAction>>
+  ) => bluebubblesMessageActions.supportsAction!(...args);
+  const extractToolSend = (
+    ...args: Parameters<NonNullable<typeof bluebubblesMessageActions.extractToolSend>>
+  ) => bluebubblesMessageActions.extractToolSend!(...args);
+  const handleAction = (
+    ...args: Parameters<NonNullable<typeof bluebubblesMessageActions.handleAction>>
+  ) => bluebubblesMessageActions.handleAction!(...args);
   const callHandleAction = (ctx: Omit<Parameters<typeof handleAction>[0], "channel">) =>
     handleAction({ channel: "bluebubbles", ...ctx });
   const blueBubblesConfig = (): OpenClawConfig => ({
@@ -71,7 +96,8 @@ describe("bluebubblesMessageActions", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getCachedBlueBubblesPrivateApiStatus).mockReturnValue(null);
+    vi.mocked(probe.getCachedBlueBubblesPrivateApiStatus).mockReset().mockReturnValue(null);
+    vi.mocked(probe.isMacOS26OrHigher).mockReset().mockReturnValue(false);
   });
 
   describe("describeMessageTool", () => {
@@ -102,6 +128,8 @@ describe("bluebubblesMessageActions", () => {
         },
       };
       const actions = describeMessageTool({ cfg })?.actions ?? [];
+      expect(actions).toContain("channel-list");
+      expect(actions).toContain("read");
       expect(actions).toContain("react");
     });
 
@@ -124,7 +152,7 @@ describe("bluebubblesMessageActions", () => {
     });
 
     it("hides private-api actions when private API is disabled", () => {
-      vi.mocked(getCachedBlueBubblesPrivateApiStatus).mockReturnValueOnce(false);
+      vi.mocked(probe.getCachedBlueBubblesPrivateApiStatus).mockReset().mockReturnValue(false);
       const cfg: OpenClawConfig = {
         channels: {
           bluebubbles: {
@@ -135,6 +163,8 @@ describe("bluebubblesMessageActions", () => {
         },
       };
       const actions = describeMessageTool({ cfg })?.actions ?? [];
+      expect(actions).toContain("channel-list");
+      expect(actions).toContain("read");
       expect(actions).toContain("upload-file");
       expect(actions).not.toContain("sendAttachment");
       expect(actions).not.toContain("react");
@@ -156,6 +186,8 @@ describe("bluebubblesMessageActions", () => {
     });
 
     it("returns true for all supported actions", () => {
+      expect(supportsAction({ action: "channel-list" })).toBe(true);
+      expect(supportsAction({ action: "read" })).toBe(true);
       expect(supportsAction({ action: "edit" })).toBe(true);
       expect(supportsAction({ action: "unsend" })).toBe(true);
       expect(supportsAction({ action: "reply" })).toBe(true);
@@ -236,6 +268,158 @@ describe("bluebubblesMessageActions", () => {
       });
     });
 
+    it("lists chats for channel-list", async () => {
+      vi.mocked(listBlueBubblesChats).mockResolvedValueOnce([
+        {
+          id: "chat_guid:iMessage;-;+15551234567",
+          target: "chat_guid:iMessage;-;+15551234567",
+          kind: "direct",
+          name: "Jane Doe",
+          chatGuid: "iMessage;-;+15551234567",
+          chatIdentifier: "+15551234567",
+        },
+      ]);
+
+      const result = await callHandleAction({
+        action: "channel-list",
+        params: { limit: 10 },
+        cfg: blueBubblesConfig(),
+        accountId: null,
+      });
+
+      expect(listBlueBubblesChats).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseUrl: "http://localhost:1234",
+          password: "test-password",
+          limit: 10,
+        }),
+      );
+      expect(result).toMatchObject({
+        details: {
+          ok: true,
+          channels: [
+            expect.objectContaining({
+              target: "chat_guid:iMessage;-;+15551234567",
+              name: "Jane Doe",
+            }),
+          ],
+        },
+      });
+    });
+
+    it.each([
+      {
+        name: "chat_guid target",
+        params: { to: "chat_guid:iMessage;-;+15551234567" },
+        expectedTarget: { kind: "chat_guid", chatGuid: "iMessage;-;+15551234567" },
+      },
+      {
+        name: "chat_id target",
+        params: { to: "chat_id:12345" },
+        expectedTarget: { kind: "chat_id", chatId: 12345 },
+      },
+      {
+        name: "chat_identifier target",
+        params: { to: "chat_identifier:chat660250192681427962" },
+        expectedTarget: {
+          kind: "chat_identifier",
+          chatIdentifier: "chat660250192681427962",
+        },
+      },
+      {
+        name: "handle target",
+        params: { to: "+15551234567" },
+        expectedTarget: {
+          kind: "handle",
+          address: "+15551234567",
+          service: "auto",
+        },
+      },
+    ])("reads history for $name", async ({ params, expectedTarget }) => {
+      vi.mocked(fetchBlueBubblesHistoryForTarget).mockResolvedValueOnce({
+        chatGuid: "iMessage;-;+15551234567",
+        target: "chat_guid:iMessage;-;+15551234567",
+        messages: [
+          {
+            messageId: "msg-1",
+            authorTag: "Jane Doe",
+            text: "hello",
+            timestamp: "2026-03-27T12:00:00.000Z",
+          },
+        ],
+      });
+
+      const result = await callHandleAction({
+        action: "read",
+        params: { ...params, limit: 5 },
+        cfg: blueBubblesConfig(),
+        accountId: null,
+      });
+
+      expect(fetchBlueBubblesHistoryForTarget).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseUrl: "http://localhost:1234",
+          password: "test-password",
+          target: expectedTarget,
+          limit: 5,
+        }),
+      );
+      expect(result).toMatchObject({
+        details: {
+          ok: true,
+          chatGuid: "iMessage;-;+15551234567",
+          target: "chat_guid:iMessage;-;+15551234567",
+          messages: [
+            expect.objectContaining({
+              messageId: "msg-1",
+              authorTag: "Jane Doe",
+              text: "hello",
+            }),
+          ],
+        },
+      });
+    });
+
+    it("uses the current channel target for read when no explicit target is provided", async () => {
+      await callHandleAction({
+        action: "read",
+        params: { limit: 5 },
+        cfg: blueBubblesConfig(),
+        accountId: null,
+        toolContext: {
+          currentChannelId: "bluebubbles:chat_guid:iMessage;-;+15550001111",
+        },
+      });
+
+      expect(fetchBlueBubblesHistoryForTarget).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: { kind: "chat_guid", chatGuid: "iMessage;-;+15550001111" },
+        }),
+      );
+    });
+
+    it("throws a target-scoped error when read target is missing", async () => {
+      await expect(
+        callHandleAction({
+          action: "read",
+          params: {},
+          cfg: blueBubblesConfig(),
+          accountId: null,
+        }),
+      ).rejects.toThrow(/target-scoped/i);
+    });
+
+    it("rejects unsupported read filters clearly", async () => {
+      await expect(
+        callHandleAction({
+          action: "read",
+          params: { to: "+15551234567", before: "msg-123" },
+          cfg: blueBubblesConfig(),
+          accountId: null,
+        }),
+      ).rejects.toThrow(/supports target \+ limit only/i);
+    });
+
     it("throws for unsupported actions", async () => {
       const cfg: OpenClawConfig = {
         channels: {
@@ -275,7 +459,7 @@ describe("bluebubblesMessageActions", () => {
     });
 
     it("throws a private-api error for private-only actions when disabled", async () => {
-      vi.mocked(getCachedBlueBubblesPrivateApiStatus).mockReturnValueOnce(false);
+      vi.mocked(probe.getCachedBlueBubblesPrivateApiStatus).mockReset().mockReturnValue(false);
       const cfg: OpenClawConfig = {
         channels: {
           bluebubbles: {
@@ -455,11 +639,7 @@ describe("bluebubblesMessageActions", () => {
         },
       });
 
-      expect(resolveChatGuidForTarget).toHaveBeenCalledWith(
-        expect.objectContaining({
-          target: { kind: "chat_guid", chatGuid: "iMessage;-;+15550001111" },
-        }),
-      );
+      expect(resolveChatGuidForTarget).not.toHaveBeenCalled();
       expect(sendBlueBubblesReaction).toHaveBeenCalledWith(
         expect.objectContaining({
           chatGuid: "iMessage;-;+15550001111",

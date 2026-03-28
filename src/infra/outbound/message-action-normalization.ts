@@ -9,6 +9,13 @@ import {
 import { applyTargetToParams } from "./channel-target.js";
 import { actionHasTarget, actionRequiresTarget } from "./message-action-spec.js";
 
+function shouldDeferTargetValidationToProvider(params: {
+  action: ChannelMessageActionName;
+  channel: string;
+}): boolean {
+  return params.action === "read" && params.channel.trim().toLowerCase() === "bluebubbles";
+}
+
 export function normalizeMessageActionInput(params: {
   action: ChannelMessageActionName;
   args: Record<string, unknown>;
@@ -67,7 +74,8 @@ export function normalizeMessageActionInput(params: {
   applyTargetToParams({ action, args: normalizedArgs });
   if (
     actionRequiresTarget(action) &&
-    !actionHasTarget(action, normalizedArgs, { channel: inferredChannel })
+    !actionHasTarget(action, normalizedArgs, { channel: inferredChannel }) &&
+    !shouldDeferTargetValidationToProvider({ action, channel: inferredChannel })
   ) {
     throw new Error(`Action ${action} requires a target.`);
   }
